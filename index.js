@@ -127,7 +127,6 @@ async function uploadToS3(buffer, fileName, contentType) {
 
     const command = new PutObjectCommand(params);
     await s3Client.send(command);
-    // return `https://${params.Bucket}.s3.${process.env.AWS_REGION}.amazonaws.com/${params.Key}`;
     return `https://${params.Bucket}.s3.${process.env.AWS_REGION}.amazonaws.com/${params.Key}`;
 }
 
@@ -142,16 +141,18 @@ async function processAndReplace(content) {
     let base64Counter = 0;
     let svgCounter = 0;
 
+    // Replace base64 images
     content = content.replace(base64Pattern, (match, p1) => {
         const buffer = Buffer.from(p1, "base64");
-        const fileName = `image-${timestamp}-${base64Counter++}.jpg`;
+        const fileName = `image-${timestamp}-${base64Counter++}.png`;
         base64Replacements.push({
             fileName,
-            uploadPromise: uploadToS3(buffer, fileName, "image/jpeg"),
+            uploadPromise: uploadToS3(buffer, fileName, "image/png"),
         });
         return `<<BASE64_URL:${fileName}>>`;
     });
 
+    // Replace SVG images
     content = content.replace(svgPattern, (match, p1) => {
         const buffer = Buffer.from(p1);
         const fileName = `svg-image-${timestamp}-${svgCounter++}.png`;
@@ -174,28 +175,41 @@ async function processAndReplace(content) {
         svgReplacements.map((item) => item.uploadPromise)
     );
 
-    base64Replacements.forEach((item, i) => {
-        content = content.replace(
-            `<<BASE64_URL:${item.fileName}>>`,
-            `![Image](${imageResults[i]})`
-        );
-    });
+    // Create a structured array
+    const structuredContent = [];
+    let currentTextBlock = "";
 
-    svgReplacements.forEach((item, i) => {
-        content = content.replace(
-            `<<SVG_URL:${item.fileName}>>`,
-            `![SVG Image](${svgResults[i]})`
-        );
-    });
+    const lines = content.split('\n');
+    for (const line of lines) {
+        if (line.startsWith('<<BASE64_URL:') || line.startsWith('<<SVG_URL:')) {
+            if (currentTextBlock.trim() !== "") {
+                structuredContent.push({ type: "text", text: currentTextBlock.trim() });
+                currentTextBlock = "";
+            }
+            
+            const fileName = line.match(/:(.*?)>>/)[1];
+            const imageUrl = line.startsWith('<<BASE64_URL:') 
+                ? imageResults[base64Replacements.findIndex(item => item.fileName === fileName)]
+                : svgResults[svgReplacements.findIndex(item => item.fileName === fileName)];
+            
+            structuredContent.push({ type: "image", image_url: imageUrl });
+        } else {
+            currentTextBlock += line + "\n";
+        }
+    }
 
-    return content;
+    if (currentTextBlock.trim() !== "") {
+        structuredContent.push({ type: "text", text: currentTextBlock.trim() });
+    }
+
+    return structuredContent;
 }
 
 const run = async () => {
     const parsedText = convert(html, options);
-    const finalContent = await processAndReplace(parsedText);
+    const structuredContent = await processAndReplace(parsedText);
 
-    console.log(finalContent);
+    console.log(JSON.stringify(structuredContent, null, 2));
 };
 
 run();
